@@ -1,0 +1,11 @@
+commands/getuserinfo.js
+commands/unwhitelist.js
+commands/whitelist.js 
+
+data
+node_modules
+assets
+
+.env
+deploy-commands.js
+index.html
