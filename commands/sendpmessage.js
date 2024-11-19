@@ -1,3 +1,5 @@
+// commands/sendpmessage.js
+
 import { SlashCommandBuilder } from '@discordjs/builders';
 import crypto from 'crypto';
 import fs from 'fs/promises';
@@ -6,15 +8,26 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const whitelistPath = path.join(__dirname, '..', 'data', 'whitelist.json');
+const accessPath = path.join(__dirname, '..', 'data', 'criticalaccess_permission.json');
 
-// Function to load whitelist
-async function loadWhitelist() {
+// Function to load JSON from a given path
+async function loadJSON(filePath, defaultData) {
     try {
-        const data = await fs.readFile(whitelistPath, 'utf8');
+        const data = await fs.readFile(filePath, 'utf8');
         return JSON.parse(data);
-    } catch {
-        return { users: [] }; // If the file doesn't exist or can't be read, return an empty whitelist
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            await fs.writeFile(filePath, JSON.stringify(defaultData, null, 2));
+            return defaultData;
+        } else {
+            throw error;
+        }
     }
+}
+
+// Function to save JSON to a given path
+async function saveJSON(filePath, data) {
+    await fs.writeFile(filePath, JSON.stringify(data, null, 2));
 }
 
 // Function to encrypt text using AES-256-CBC
@@ -86,59 +99,80 @@ export default {
         ),
 
     async execute(interaction) {
-        const messageText = interaction.options.getString('text');
-        const whitelist = await loadWhitelist();
+        try {
+            const accessData = await loadJSON(accessPath, { userIds: [] });
+            const requesterId = interaction.user.id;
 
-        // Encrypt the message
-        const encrypted = encryptText(messageText);
+            // Check if the requester has access
+            if (!accessData.userIds.includes(requesterId)) {
+                return interaction.reply({
+                    content: '❌ You do not have permission to use this command.',
+                    ephemeral: true
+                });
+            }
 
-        // Limit the encrypted content size to fit within Discord's max length
-        const encryptedContent = encrypted.content.slice(0, 1000);  // Truncate to 1000 characters
+            const messageText = interaction.options.getString('text');
+            const whitelistData = await loadJSON(whitelistPath, { users: [] });
+            const whitelist = whitelistData.users;
 
-        // Generate a shorter distorted version
-        const distortedText = generateDistortedText(Math.min(messageText.length, 1000));
+            // Encrypt the message
+            const encrypted = encryptText(messageText);
 
-        // Create the message content
-        let content = '';
+            // Limit the encrypted content size to fit within Discord's max length
+            const encryptedContent = encrypted.content.slice(0, 1000);  // Truncate to 1000 characters
 
-        // Add hidden encrypted data (truncated if necessary)
-        content += `||​${JSON.stringify({
-            iv: encrypted.iv,
-            content: encryptedContent,
-        })}​||`;
+            // Generate a shorter distorted version
+            const distortedText = generateDistortedText(Math.min(messageText.length, 1000));
 
-        // Add visible content in the public chat (distorted text)
-        content += `\n🔒 Encrypted Message: ${distortedText}`;
+            // Create the message content
+            let content = '';
 
-        // Send the encrypted message to the public chat
-        await interaction.reply({
-            content,
-            allowedMentions: { parse: [] }
-        });
-
-        // Get the whitelisted users
-        const isWhitelisted = whitelist.users.includes(interaction.user.id);
-
-        // Send the decrypted message as a DM to the whitelisted users and the sender
-        if (isWhitelisted || interaction.user.id === interaction.user.id) {
-            const decryptedMessage = decryptText({
+            // Add hidden encrypted data (truncated if necessary)
+            content += `||​${JSON.stringify({
                 iv: encrypted.iv,
-                content: encrypted.content,
+                content: encryptedContent,
+            })}​||`;
+
+            // Add visible content in the public chat (distorted text)
+            content += `\n🔒 Encrypted Message: ${distortedText}`;
+
+            // Send the encrypted message to the public chat
+            await interaction.reply({
+                content,
+                allowedMentions: { parse: [] }
             });
 
-            // Send the decrypted message as a DM to the user who sent the message and the whitelisted users
-            try {
-                const usersToNotify = [interaction.user.id, ...whitelist.users];
+            // Check if the sender is whitelisted
+            const isWhitelisted = whitelist.includes(requesterId);
 
-                for (const userId of usersToNotify) {
-                    const user = await interaction.client.users.fetch(userId);
-                    await user.send({
-                        content: `🔓 Decrypted Message: ${decryptedMessage}\n(Only you can see this message.)`
-                    });
+            // Send the decrypted message as a DM to the whitelisted users and the sender
+            if (isWhitelisted) {
+                const decryptedMessage = decryptText({
+                    iv: encrypted.iv,
+                    content: encrypted.content,
+                });
+
+                // Send the decrypted message as a DM to the user who sent the message and the whitelisted users
+                try {
+                    const usersToNotify = [requesterId, ...whitelist];
+                    const uniqueUserIds = [...new Set(usersToNotify)];
+
+                    for (const userId of uniqueUserIds) {
+                        const user = await interaction.client.users.fetch(userId);
+                        await user.send({
+                            content: `🔓 Decrypted Message: ${decryptedMessage}\n(Only you can see this message.)`
+                        });
+                    }
+                } catch (error) {
+                    console.error('Error sending DM:', error);
                 }
-            } catch (error) {
-                console.error('Error sending DM:', error);
             }
+        } catch (error) {
+            console.error('Error sending encrypted message:', error);
+            return interaction.reply({
+                content: '❌ There was an error processing your encrypted message.',
+                ephemeral: true,
+            });
         }
     },
 };

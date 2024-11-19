@@ -9,3 +9,14 @@ assets
 .env
 deploy-commands.js
 index.html
+
+logging
+
+commands/receivelogsfromserver.js
+commands/permission.js
+commands/log.js
+commands/crossservermessage.js
+commands/crossservermessagingwhitelist.js
+commands/logchannel.js
+
+index.js
