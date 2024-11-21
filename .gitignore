@@ -18,5 +18,3 @@ commands/log.js
 commands/crossservermessage.js
 commands/crossservermessagingwhitelist.js
 commands/logchannel.js
-
-index.js

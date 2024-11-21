@@ -25,36 +25,10 @@ async function loadJSON(filePath, defaultData) {
     }
 }
 
-// Function to save JSON to a given path
-async function saveJSON(filePath, data) {
-    await fs.writeFile(filePath, JSON.stringify(data, null, 2));
-}
-
 // Function to encrypt text using AES-256-CBC
-function encryptText(text) {
+function encryptMessage(message, secretKeyBase64) {
     const algorithm = 'aes-256-cbc';
-    const secretKeyBase64 = process.env.ENCRYPTION_KEY || 'f44KFCOk+T5svYt+qW6F8WPVqcmvmjntw3J7G4wtR34=';
-
-    // Convert the base64 key to a buffer and ensure it is exactly 32 bytes
-    const keyBuffer = Buffer.from(secretKeyBase64, 'base64');
-    if (keyBuffer.length !== 32) {
-        throw new Error('Secret key must be 32 bytes for AES-256 encryption.');
-    }
-
     const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipheriv(algorithm, keyBuffer, iv);
-    const encrypted = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
-
-    return {
-        iv: iv.toString('base64'),
-        content: encrypted.toString('base64')
-    };
-}
-
-// Function to decrypt text using AES-256-CBC
-function decryptText(hash) {
-    const algorithm = 'aes-256-cbc';
-    const secretKeyBase64 = process.env.ENCRYPTION_KEY || 'f44KFCOk+T5svYt+qW6F8WPVqcmvmjntw3J7G4wtR34=';
 
     // Convert the base64 key to a buffer and ensure it is exactly 32 bytes
     const keyBuffer = Buffer.from(secretKeyBase64, 'base64');
@@ -62,122 +36,96 @@ function decryptText(hash) {
         throw new Error('Secret key must be 32 bytes for AES-256 encryption.');
     }
 
-    const decipher = crypto.createDecipheriv(
-        algorithm,
-        keyBuffer,
-        Buffer.from(hash.iv, 'base64')
-    );
+    // Create a cipher with the provided key and IV
+    const cipher = crypto.createCipheriv(algorithm, keyBuffer, iv);
 
-    const decrypted = Buffer.concat([
-        decipher.update(Buffer.from(hash.content, 'base64')),
-        decipher.final()
-    ]);
+    let encrypted = cipher.update(message, 'utf8', 'base64');
+    encrypted += cipher.final('base64');
 
-    return decrypted.toString('utf8');
-}
-
-// Function to generate distorted text
-function generateDistortedText(length) {
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{}|;:,.<>?';
-    let result = '';
-
-    for (let i = 0; i < length; i++) {
-        result += characters.charAt(Math.floor(Math.random() * characters.length));
-    }
-
-    return result;
+    // Return the encrypted message along with the IV for decryption (both in base64)
+    return { 
+        encryptedMessage: encrypted, 
+        iv: iv.toString('base64') 
+    };
 }
 
 export default {
     data: new SlashCommandBuilder()
         .setName('sendencryptedmessage')
-        .setDescription('Send an encrypted message to the encrypted channel')
+        .setDescription('Send an encrypted message to whitelisted users')
         .addStringOption(option =>
             option.setName('message')
                 .setDescription('The message to send')
                 .setRequired(true)
-        )
-        .addBooleanOption(option =>
-            option.setName('show-user')
-                .setDescription('Whether to include the username in the embed title')
-                .setRequired(false)
         ),
 
     async execute(interaction) {
         try {
+            // Defer the reply to give the bot time to process
+            await interaction.deferReply({ ephemeral: true });
+
             const accessData = await loadJSON(accessPath, { userIds: [] });
             const requesterId = interaction.user.id;
 
             // Check if the requester has access
             if (!accessData.userIds.includes(requesterId)) {
-                return interaction.reply({
+                return interaction.editReply({
                     content: '❌ You do not have permission to use this command.',
-                    ephemeral: true
                 });
             }
 
-            const messageText = interaction.options.getString('message');
-            const showUser = interaction.options.getBoolean('show-user') ?? false;
-
-            // Encrypt the message
-            const encrypted = encryptText(messageText);
-
-            // Limit the encrypted content size to fit within Discord's max length
-            const encryptedContent = encrypted.content.slice(0, 1000);  // Truncate to 1000 characters
-
-            // Generate a shorter distorted version
-            const distortedText = generateDistortedText(Math.min(messageText.length, 1000));
-
-            // Create the message content
-            let content = '';
-
-            // Add hidden encrypted data (truncated if necessary)
-            content += `||​${JSON.stringify({
-                iv: encrypted.iv,
-                content: encryptedContent,
-            })}​||`;
-
-            // Add visible content in the public chat (distorted text)
-            content += `\n🔒 Encrypted Message: ${distortedText}`;
-
-            // Send the encrypted message to the public chat
-            await interaction.reply({
-                content,
-                allowedMentions: { parse: [] }
-            });
-
-            // Check if the sender is whitelisted
+            // Load whitelist data
             const whitelistData = await loadJSON(whitelistPath, { users: [] });
             const whitelist = whitelistData.users;
-            const isWhitelisted = whitelist.includes(requesterId);
 
-            // Send the decrypted message as a DM to the whitelisted users and the sender
-            if (isWhitelisted) {
-                const decryptedMessage = decryptText({
-                    iv: encrypted.iv,
-                    content: encrypted.content,
-                });
+            // Get the message
+            const messageText = interaction.options.getString('message');
 
-                // Send the decrypted message as a DM to the user who sent the message and the whitelisted users
+            // Hardcoded secret key (Base64-encoded 32-byte key)
+            const secretKeyBase64 = process.env.ENCRYPTION_KEY || 'f44KFCOk+T5svYt+qW6F8WPVqcmvmjntw3J7G4wtR34=';
+
+            // Encrypt the message
+            const { encryptedMessage, iv } = encryptMessage(messageText, secretKeyBase64);
+
+            // Send encrypted messages to whitelisted users and the sender
+            const usersToNotify = [requesterId, ...whitelist];
+            const uniqueUserIds = [...new Set(usersToNotify)];
+
+            // Track successful and failed message sends
+            const successfulSends = [];
+            const failedSends = [];
+
+            // Send encrypted messages
+            for (const userId of uniqueUserIds) {
                 try {
-                    const usersToNotify = [requesterId, ...whitelist];
-                    const uniqueUserIds = [...new Set(usersToNotify)];
-
-                    for (const userId of uniqueUserIds) {
-                        const user = await interaction.client.users.fetch(userId);
-                        await user.send({
-                            content: `🔓 Decrypted Message: ${decryptedMessage}\n(Only you can see this message.)`
-                        });
-                    }
+                    const user = await interaction.client.users.fetch(userId);
+                    await user.send({
+                        content: `🔒 Encrypted Message:
+\`\`\`plaintext
+${encryptedMessage}
+IV: ${iv}
+Secret Key: (Private)
+\`\`\``
+                    });
+                    successfulSends.push(userId);
                 } catch (error) {
-                    console.error('Error sending DM:', error);
+                    console.error(`Error sending encrypted message to user ${userId}:`, error);
+                    failedSends.push(userId);
                 }
             }
+
+            // Provide feedback about message distribution
+            let replyContent = '✅ Encrypted message sent successfully.';
+            if (failedSends.length > 0) {
+                replyContent += `\n❌ Failed to send to ${failedSends.length} user(s).`;
+            }
+
+            return interaction.editReply({ content: replyContent });
+
         } catch (error) {
             console.error('Error sending encrypted message:', error);
-            return interaction.reply({
+            return interaction.editReply({
                 content: '❌ There was an error processing your encrypted message.',
-                ephemeral: true,
             });
         }
     },
