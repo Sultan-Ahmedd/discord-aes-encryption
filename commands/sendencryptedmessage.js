@@ -76,7 +76,9 @@ export default {
 
             // Load whitelist data
             const whitelistData = await loadJSON(whitelistPath, { users: [] });
-            const whitelist = whitelistData.users;
+
+            // Ensure `users` is an array
+            const whitelist = Array.isArray(whitelistData.users) ? whitelistData.users : [];
 
             // Get the message
             const messageText = interaction.options.getString('message');
